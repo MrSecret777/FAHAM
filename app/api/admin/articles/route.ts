@@ -11,6 +11,7 @@ type ArticlePayload = {
   body?: string;
   status?: "draft" | "published" | "scheduled";
   categoryId?: string | null;
+  category?: string | null;
   seriesId?: string | null;
   coverPath?: string | null;
   scheduledAt?: string | null;
@@ -40,14 +41,32 @@ async function getAdminUser() {
   return { supabase, userId: user.id };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const { supabase, userId } = await getAdminUser();
 
   if (!userId) {
     return jsonError("Sesi admin tidak sah.", 401);
   }
 
+  const id = request ? new URL(request.url).searchParams.get("id") : null;
+
   if (!supabase) {
+    if (id) {
+      return NextResponse.json({
+        article: {
+          id,
+          title: "Draf demo FAHAM",
+          slug: "draf-demo-faham",
+          excerpt: "Ringkasan demo.",
+          body: "Kandungan demo editor FAHAM.",
+          status: "draft",
+          category: "Pemikiran",
+          scheduledAt: null
+        },
+        mode: "demo"
+      });
+    }
+
     return NextResponse.json({
       articles: [
         {
@@ -59,6 +78,38 @@ export async function GET() {
         }
       ],
       mode: "demo"
+    });
+  }
+
+  if (id) {
+    const { data, error } = await supabase
+      .from("articles")
+      .select("id,title,slug,excerpt,content,status,scheduled_at,cover_path,seo_title,seo_description,categories(name)")
+      .eq("id", id)
+      .single();
+
+    if (error) {
+      return jsonError(error.message, 404);
+    }
+
+    const article = data as Record<string, any>;
+    const category = Array.isArray(article.categories) ? article.categories[0]?.name : article.categories?.name;
+
+    return NextResponse.json({
+      article: {
+        id: article.id,
+        title: article.title,
+        slug: article.slug,
+        excerpt: article.excerpt ?? "",
+        body: article.content?.body ?? "",
+        status: article.status,
+        category: category ?? "Pemikiran",
+        scheduledAt: article.scheduled_at ?? "",
+        coverPath: article.cover_path,
+        seoTitle: article.seo_title,
+        seoDescription: article.seo_description
+      },
+      mode: "supabase"
     });
   }
 
@@ -92,10 +143,17 @@ export async function POST(request: Request) {
   const requestedStatus = payload.status ?? "draft";
   const now = new Date().toISOString();
   const slug = createSlug(payload.slug || title);
+  let categoryId = payload.categoryId || null;
+
+  if (supabase && !categoryId && payload.category) {
+    const categorySlug = createSlug(payload.category);
+    const { data: category } = await supabase.from("categories").select("id").eq("slug", categorySlug).maybeSingle();
+    categoryId = category?.id ?? null;
+  }
 
   const articleRecord = {
     author_id: userId,
-    category_id: payload.categoryId || null,
+    category_id: categoryId,
     series_id: payload.seriesId || null,
     title,
     slug,
@@ -148,4 +206,29 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ article: data, mode: "supabase" }, { status: 201 });
+}
+
+export async function DELETE(request: Request) {
+  const { supabase, userId } = await getAdminUser();
+  const id = new URL(request.url).searchParams.get("id");
+
+  if (!userId) {
+    return jsonError("Sesi admin tidak sah.", 401);
+  }
+
+  if (!id) {
+    return jsonError("ID artikel diperlukan.");
+  }
+
+  if (!supabase) {
+    return NextResponse.json({ deleted: true, mode: "demo" });
+  }
+
+  const { error } = await supabase.from("articles").delete().eq("id", id);
+
+  if (error) {
+    return jsonError(error.message, 500);
+  }
+
+  return NextResponse.json({ deleted: true, mode: "supabase" });
 }
